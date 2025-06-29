@@ -2,9 +2,18 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_chroma import Chroma
 import gradio as gr
 
+# FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from typing import List, Tuple
+from pydantic import BaseModel
+
+
 # import the .env file
 from dotenv import load_dotenv
 load_dotenv()
+
+app = FastAPI()
 
 # configuration
 DATA_PATH = r"data"
@@ -26,9 +35,13 @@ vector_store = Chroma(
 num_results = 5
 retriever = vector_store.as_retriever(search_kwargs={'k': num_results})
 
+
+def sse_format(data: str) -> str:
+    # Formats text as SSE message
+    return f"data: {data}\n\n"
+
 # call this function for every message added to the chatbot
 def stream_response(message, history):
-    
     # retriever the relevant chunks based on the question asked
     docs = retriever.invoke(message)
 
@@ -55,17 +68,35 @@ def stream_response(message, history):
 
         """
 
-        # print(rag_prompt)
-
+        # print(response.content)
+        # partial_message = ""
         for response in llm.stream(rag_prompt):
             partial_message += response.content
-            yield partial_message
+            # print(response.content, partial_message)
+            # yield partial_message
+            yield sse_format(response.content)
+        
+        # return partial_message
 
-# initiate the Gradio app
-chatbot = gr.ChatInterface(stream_response, textbox=gr.Textbox(placeholder="Send to the LLM...",
-                                                               container= False,
-                                                               autoscroll=True,
-                                                               scale = 7
-                                                               ))
-# launch the Gradio app
-chatbot.launch()
+# # initiate the Gradio app
+# chatbot = gr.ChatInterface(stream_response, textbox=gr.Textbox(placeholder="Send to the LLM...",
+#                                                                container= False,
+#                                                                autoscroll=True,
+#                                                                scale = 7
+#                                                                ))
+# # launch the Gradio app
+# chatbot.launch()
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: List[Tuple[str, str]] = []
+
+@app.post("/chat")
+async def chat_stream(req: ChatRequest):
+    generator = stream_response(req.message, req.history)
+    return StreamingResponse(generator, media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Transfer-Encoding": "chunked"
+    })
